@@ -1,0 +1,52 @@
+//@version=6
+strategy("EMA Crossover Strategy (10/50)", overlay=true,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     initial_capital=100000, currency=currency.USD,
+     commission_type=strategy.commission.percent, commission_value=0.05)
+
+// ─── Inputs ───────────────────────────────────────────────
+fastLen   = input.int(10, "Fast EMA Length", minval=1)
+slowLen   = input.int(50, "Slow EMA Length", minval=1)
+useLong   = input.bool(true,  "Enable Long Trades")
+useShort  = input.bool(true,  "Enable Short Trades")
+tpPercent = input.float(3.0, "Take Profit %", minval=0.1, step=0.1) / 100
+slPercent = input.float(1.5, "Stop Loss %",   minval=0.1, step=0.1) / 100
+startDate = input.time(timestamp("2020-01-01"), "Backtest Start Date")
+
+// ─── Indicators ───────────────────────────────────────────
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
+
+longCond  = ta.crossover(fastEma, slowEma)
+shortCond = ta.crossunder(fastEma, slowEma)
+inWindow  = time >= startDate
+
+// ─── Entries ──────────────────────────────────────────────
+// alert_message is the payload your webhook bridge (e.g. TradersPost)
+// will receive when the alert fires with {{strategy.order.alert_message}}
+if inWindow and useLong and longCond
+    strategy.entry("Long", strategy.long,
+         alert_message='{"ticker":"{{ticker}}","action":"buy","price":{{close}},"qty":100}')
+
+if inWindow and useShort and shortCond
+    strategy.entry("Short", strategy.short,
+         alert_message='{"ticker":"{{ticker}}","action":"sell","price":{{close}},"qty":100}')
+
+// ─── Exits (TP / SL as % of entry price) ───────────────────
+if strategy.position_size > 0
+    longEntry = strategy.position_avg_price
+    strategy.exit("Long TP/SL", "Long",
+         limit = longEntry * (1 + tpPercent),
+         stop  = longEntry * (1 - slPercent))
+
+if strategy.position_size < 0
+    shortEntry = strategy.position_avg_price
+    strategy.exit("Short TP/SL", "Short",
+         limit = shortEntry * (1 - tpPercent),
+         stop  = shortEntry * (1 + slPercent))
+
+// ─── Plotting ─────────────────────────────────────────────
+plot(fastEma, "Fast EMA", color=color.new(color.teal, 0), linewidth=2)
+plot(slowEma, "Slow EMA", color=color.new(color.orange, 0), linewidth=2)
+plotshape(longCond,  title="Long Signal",  location=location.belowbar, style=shape.triangleup,   size=size.small, color=color.new(color.green, 0))
+plotshape(shortCond, title="Short Signal", location=location.abovebar, style=shape.triangledown, size=size.small, color=color.new(color.red, 0))
