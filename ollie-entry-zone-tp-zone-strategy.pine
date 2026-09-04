@@ -1,0 +1,110 @@
+//@version=6
+strategy("Ollie Entry-Zone -> TP-Zone Strategy", overlay=true, default_qty_type=strategy.fixed, default_qty_value=1, calc_on_every_tick=true, pyramiding=0, process_orders_on_close=false)
+
+// ─── SETTINGS ────────────────────────────────────────────────────────────────
+// Set entry_points=15, tp_points=3, stop_points=12 on your MNQ chart (1:1).
+// Set entry_points=4,  tp_points=1,  stop_points=3  on your MES chart (1:1).
+entry_points = input.float(15, "Entry distance (points) — 15 MNQ / 4 MES")
+tp_points    = input.float(3,  "Take-profit distance from level (points) — 3 MNQ / 1 MES")
+stop_points  = input.float(12, "Stop-loss distance FROM ENTRY (points) — 12 MNQ / 3 MES for 1:1")
+pivot_left   = input.int(5,    "Pivot left bars")
+pivot_right  = input.int(5,    "Pivot right bars")
+lookback_4h  = input.int(50,   "4H lookback (bars)")
+lookback_1h  = input.int(100,  "1H lookback (bars)")
+
+// ─── PIVOT FUNCTIONS ───────────────────────────────────────────────────────
+// Window is i-pivot_left .. i+pivot_right (left = bars before the candidate,
+// right = bars after it) — matches the input labels.
+f_nearest_high(lb, pl, pr) =>
+    nearest = float(na)
+    for i = pr to lb
+        candidate = high[i]
+        is_ph = true
+        for j = i - pl to i + pr
+            if j != i and not na(high[j]) and high[j] >= candidate
+                is_ph := false
+        if is_ph
+            swept = false
+            for j = 0 to i - 1
+                if high[j] > candidate
+                    swept := true
+            if not swept
+                dist = math.abs(close - candidate)
+                if na(nearest) or dist < math.abs(close - nearest)
+                    nearest := candidate
+    nearest
+
+f_nearest_low(lb, pl, pr) =>
+    nearest = float(na)
+    for i = pr to lb
+        candidate = low[i]
+        is_pl = true
+        for j = i - pl to i + pr
+            if j != i and not na(low[j]) and low[j] <= candidate
+                is_pl := false
+        if is_pl
+            swept = false
+            for j = 0 to i - 1
+                if low[j] < candidate
+                    swept := true
+            if not swept
+                dist = math.abs(close - candidate)
+                if na(nearest) or dist < math.abs(close - nearest)
+                    nearest := candidate
+    nearest
+
+// ─── ZONES — runs on THIS chart's own symbol (syminfo.tickerid), not a fixed ticker ──
+near_high_4h = request.security(syminfo.tickerid, "240", f_nearest_high(lookback_4h, pivot_left, pivot_right))
+near_low_4h  = request.security(syminfo.tickerid, "240", f_nearest_low (lookback_4h, pivot_left, pivot_right))
+near_high_1h = request.security(syminfo.tickerid, "60",  f_nearest_high(lookback_1h, pivot_left, pivot_right))
+near_low_1h  = request.security(syminfo.tickerid, "60",  f_nearest_low (lookback_1h, pivot_left, pivot_right))
+
+// ─── ENTRY: price's bar-range first comes within entry_points of an unswept zone ──
+long_signal_4h  = not na(near_high_4h) and high >= near_high_4h - entry_points
+long_signal_1h  = not na(near_high_1h) and high >= near_high_1h - entry_points
+short_signal_4h = not na(near_low_4h)  and low  <= near_low_4h  + entry_points
+short_signal_1h = not na(near_low_1h)  and low  <= near_low_1h  + entry_points
+
+var float long_target  = na
+var float short_target = na
+
+// Webhook payloads for your bridge (TradersPost etc.) — paste
+// {{strategy.order.alert_message}} into the alert's Message box.
+if strategy.position_size == 0
+    if long_signal_4h
+        long_target := near_high_4h
+        strategy.entry("Long", strategy.long, alert_message='{"ticker":"{{ticker}}","action":"buy","orderType":"market","quantity":1,"zone":"4H"}')
+    else if long_signal_1h
+        long_target := near_high_1h
+        strategy.entry("Long", strategy.long, alert_message='{"ticker":"{{ticker}}","action":"buy","orderType":"market","quantity":1,"zone":"1H"}')
+    else if short_signal_4h
+        short_target := near_low_4h
+        strategy.entry("Short", strategy.short, alert_message='{"ticker":"{{ticker}}","action":"sell","orderType":"market","quantity":1,"zone":"4H"}')
+    else if short_signal_1h
+        short_target := near_low_1h
+        strategy.entry("Short", strategy.short, alert_message='{"ticker":"{{ticker}}","action":"sell","orderType":"market","quantity":1,"zone":"1H"}')
+
+// ─── EXIT: take-profit anchored to the ZONE, stop-loss anchored to ENTRY PRICE ──
+// alert_profit / alert_loss let the bridge tell TP fills apart from SL fills if you need that downstream.
+if strategy.position_size > 0 and not na(long_target)
+    strategy.exit("TP/SL Long", "Long",
+         limit=long_target - tp_points, stop=strategy.position_avg_price - stop_points,
+         comment_profit="Long TP", comment_loss="Long SL",
+         alert_profit='{"ticker":"{{ticker}}","action":"sell","orderType":"market","quantity":1,"reason":"take_profit"}',
+         alert_loss='{"ticker":"{{ticker}}","action":"sell","orderType":"market","quantity":1,"reason":"stop_loss"}')
+
+if strategy.position_size < 0 and not na(short_target)
+    strategy.exit("TP/SL Short", "Short",
+         limit=short_target + tp_points, stop=strategy.position_avg_price + stop_points,
+         comment_profit="Short TP", comment_loss="Short SL",
+         alert_profit='{"ticker":"{{ticker}}","action":"buy","orderType":"market","quantity":1,"reason":"take_profit"}',
+         alert_loss='{"ticker":"{{ticker}}","action":"buy","orderType":"market","quantity":1,"reason":"stop_loss"}')
+
+// Reset targets once flat again
+if strategy.position_size == 0
+    long_target := na
+    short_target := na
+
+// ─── VISUAL: mark entries/exits on chart for review ───────────────────────────
+plotshape(strategy.position_size > 0 and strategy.position_size[1] == 0, title="Long Entry", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(strategy.position_size < 0 and strategy.position_size[1] == 0, title="Short Entry", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
